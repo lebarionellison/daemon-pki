@@ -1,10 +1,13 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use uuid::Uuid;
+
+use crate::certificates::CertificateRecord;
 
 use crate::issuance::{
     AuthenticatedPrincipal,
@@ -40,6 +43,11 @@ struct IssueRequest {
     server_auth: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct RevokeRequest {
+    reason: Option<String>,
+}
+
 /// Explicit authorization policy for mTLS identities.
 ///
 /// Authentication proves that a client possesses a trusted
@@ -57,7 +65,8 @@ impl AuthorizationPolicy {
         }
     }
 
-    /// Allow a specific certificate fingerprint to issue certificates.
+    /// Allow a specific certificate fingerprint to issue certificates
+    /// and operate the certificate inventory.
     ///
     /// Authorization is bound to the cryptographic identity of the
     /// certificate rather than its human-readable common name.
@@ -91,6 +100,14 @@ impl AuthorizationPolicy {
         if self.can_issue_certificates(identity) {
             roles.push(
                 "certificate:issue".to_string(),
+            );
+
+            roles.push(
+                "certificate:read".to_string(),
+            );
+
+            roles.push(
+                "certificate:revoke".to_string(),
             );
         }
 
@@ -296,6 +313,38 @@ impl HttpApi {
                 .await?;
             }
 
+            ("GET", "/v1/certificates") => {
+                self.handle_list_certificates(
+                    stream,
+                    &identity,
+                )
+                .await?;
+            }
+
+            _ if method == "GET"
+                && path.starts_with("/v1/certificates/") =>
+            {
+                self.handle_get_certificate(
+                    stream,
+                    path,
+                    &identity,
+                )
+                .await?;
+            }
+
+            _ if method == "POST"
+                && path.ends_with("/revoke")
+                && path.starts_with("/v1/certificates/") =>
+            {
+                self.handle_revoke_certificate(
+                    stream,
+                    path,
+                    body,
+                    &identity,
+                )
+                .await?;
+            }
+
             _ => {
                 self.write_json(
                     stream,
@@ -398,6 +447,257 @@ impl HttpApi {
         Ok(())
     }
 
+    async fn handle_list_certificates(
+        &self,
+        stream: &mut tokio_rustls::server::TlsStream<
+            tokio::net::TcpStream,
+        >,
+        identity: &MtlsIdentity,
+    ) -> Result<()> {
+        if !self.authorization.can_issue_certificates(identity) {
+            self.write_json(
+                stream,
+                403,
+                &ErrorResponse {
+                    error:
+                        "certificate inventory access is not authorized"
+                            .to_string(),
+                },
+            )
+            .await?;
+
+            return Ok(());
+        }
+
+        let certificates =
+            self.issuance
+                .certificate_store()
+                .list();
+
+        self.write_json(
+            stream,
+            200,
+            &certificates,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn handle_get_certificate(
+        &self,
+        stream: &mut tokio_rustls::server::TlsStream<
+            tokio::net::TcpStream,
+        >,
+        path: &str,
+        identity: &MtlsIdentity,
+    ) -> Result<()> {
+        if !self.authorization.can_issue_certificates(identity) {
+            self.write_json(
+                stream,
+                403,
+                &ErrorResponse {
+                    error:
+                        "certificate inventory access is not authorized"
+                            .to_string(),
+                },
+            )
+            .await?;
+
+            return Ok(());
+        }
+
+        let id = match Self::certificate_id_from_path(path) {
+            Some(id) => id,
+
+            None => {
+                self.write_json(
+                    stream,
+                    400,
+                    &ErrorResponse {
+                        error:
+                            "invalid certificate id"
+                                .to_string(),
+                    },
+                )
+                .await?;
+
+                return Ok(());
+            }
+        };
+
+        let store =
+            self.issuance.certificate_store();
+
+        match store.get(id) {
+            Some(certificate) => {
+                self.write_json(
+                    stream,
+                    200,
+                    &certificate,
+                )
+                .await?;
+            }
+
+            None => {
+                self.write_json(
+                    stream,
+                    404,
+                    &ErrorResponse {
+                        error:
+                            "certificate not found"
+                                .to_string(),
+                    },
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_revoke_certificate(
+        &self,
+        stream: &mut tokio_rustls::server::TlsStream<
+            tokio::net::TcpStream,
+        >,
+        path: &str,
+        body: &[u8],
+        identity: &MtlsIdentity,
+    ) -> Result<()> {
+        if !self.authorization.can_issue_certificates(identity) {
+            self.write_json(
+                stream,
+                403,
+                &ErrorResponse {
+                    error:
+                        "certificate revocation is not authorized"
+                            .to_string(),
+                },
+            )
+            .await?;
+
+            return Ok(());
+        }
+
+        let id = match Self::certificate_id_from_revoke_path(path) {
+            Some(id) => id,
+
+            None => {
+                self.write_json(
+                    stream,
+                    400,
+                    &ErrorResponse {
+                        error:
+                            "invalid certificate id"
+                                .to_string(),
+                    },
+                )
+                .await?;
+
+                return Ok(());
+            }
+        };
+
+        let request: RevokeRequest =
+            if body.is_empty() {
+                RevokeRequest { reason: None }
+            } else {
+                match serde_json::from_slice(body) {
+                    Ok(value) => value,
+
+                    Err(_) => {
+                        self.write_json(
+                            stream,
+                            400,
+                            &ErrorResponse {
+                                error:
+                                    "invalid JSON request body"
+                                        .to_string(),
+                            },
+                        )
+                        .await?;
+
+                        return Ok(());
+                    }
+                }
+            };
+
+        let store =
+            self.issuance.certificate_store();
+
+        match store.revoke(
+            id,
+            request.reason.unwrap_or_else(|| "revoked by operator".to_string()),
+        ) {
+            Ok(Some(certificate)) => {
+                self.write_json(
+                    stream,
+                    200,
+                    &certificate,
+                )
+                .await?;
+            }
+
+            Ok(None) => {
+                self.write_json(
+                    stream,
+                    404,
+                    &ErrorResponse {
+                        error:
+                            "certificate not found"
+                                .to_string(),
+                    },
+                )
+                .await?;
+            }
+
+            Err(error) => {
+                self.write_json(
+                    stream,
+                    500,
+                    &ErrorResponse {
+                        error: error.to_string(),
+                    },
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn certificate_id_from_path(
+        path: &str,
+    ) -> Option<Uuid> {
+        let id_text =
+            path.strip_prefix("/v1/certificates/")?;
+
+        if id_text.is_empty()
+            || id_text.contains('/')
+        {
+            return None;
+        }
+
+        Uuid::parse_str(id_text).ok()
+    }
+
+    fn certificate_id_from_revoke_path(
+        path: &str,
+    ) -> Option<Uuid> {
+        let id_text =
+            path.strip_prefix("/v1/certificates/")?
+                .strip_suffix("/revoke")?;
+
+        if id_text.is_empty()
+            || id_text.contains('/')
+        {
+            return None;
+        }
+
+        Uuid::parse_str(id_text).ok()
+    }
+
     async fn write_json<T: Serialize>(
         &self,
         stream: &mut tokio_rustls::server::TlsStream<
@@ -418,6 +718,7 @@ impl HttpApi {
             400 => "Bad Request",
             403 => "Forbidden",
             404 => "Not Found",
+            500 => "Internal Server Error",
             _ => "Internal Server Error",
         };
 
@@ -486,7 +787,9 @@ mod tests {
         assert_eq!(
             roles,
             vec![
-                "certificate:issue".to_string()
+                "certificate:issue".to_string(),
+                "certificate:read".to_string(),
+                "certificate:revoke".to_string(),
             ]
         );
     }
@@ -550,7 +853,6 @@ mod tests {
         );
     }
 }
-
 
 
 
