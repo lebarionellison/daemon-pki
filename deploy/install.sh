@@ -3,6 +3,8 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/daemon-pki"
 DATA_DIR="/var/lib/daemon-pki"
+CONFIG_DIR="/etc/daemon-pki"
+ENV_FILE="${CONFIG_DIR}/daemon-pki.env"
 SERVICE_USER="daemon-pki"
 BINARY_SOURCE="${1:-./daemon-pki-server}"
 
@@ -27,6 +29,7 @@ fi
 
 install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${INSTALL_DIR}"
 install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${DATA_DIR}"
+install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 
 install \
     -m 0755 \
@@ -42,6 +45,21 @@ install \
     "./daemon-pki.service" \
     "/etc/systemd/system/daemon-pki.service"
 
+if [[ ! -f "${ENV_FILE}" ]]; then
+    install \
+        -m 0600 \
+        -o root \
+        -g root \
+        /dev/null \
+        "${ENV_FILE}"
+
+    echo
+    echo "Created:"
+    echo "  ${ENV_FILE}"
+    echo
+    echo "Add DAEMON_PKI_ISSUE_FINGERPRINTS to this file before starting the service."
+fi
+
 systemctl daemon-reload
 systemctl enable daemon-pki.service
 
@@ -50,6 +68,7 @@ echo "Daemon PKI installation complete."
 echo
 echo "Binary:  ${INSTALL_DIR}/daemon-pki-server"
 echo "Data:    ${DATA_DIR}"
+echo "Config:  ${ENV_FILE}"
 echo "Service: daemon-pki.service"
 echo
 echo "Start with:"
