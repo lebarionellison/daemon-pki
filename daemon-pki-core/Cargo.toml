@@ -15,3 +15,5 @@ time.workspace = true
 zeroize.workspace = true
 rcgen.workspace = true
 x509-parser.workspace = true
+
+pem.workspace = true

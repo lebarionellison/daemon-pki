@@ -22,8 +22,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 sha2 = "0.10"
+pem = "3"
 
-rcgen = { version = "0.14.10", features = ["pem", "zeroize"] }
+rcgen = { version = "0.14.10", features = ["pem", "zeroize", "x509-parser"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }
 rustls = "0.23.45"
+
+
 
