@@ -1,4 +1,4 @@
-﻿use std::{
+use std::{
     env,
     fs,
     path::{Path, PathBuf},
@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 
 use daemon_pki_api::{
+    certificates::CertificateStore,
     http::{AuthorizationPolicy, HttpApi},
     issuance::{IssuancePolicy, IssuanceService},
     tls::server::build_mtls_server_config,
@@ -190,6 +191,20 @@ async fn main() -> Result<()> {
             &intermediate,
         )?;
 
+    let certificate_store_path =
+        data_dir.join("certificates.json");
+
+    let certificate_store =
+        CertificateStore::open(&certificate_store_path)
+            .with_context(|| {
+                format!(
+                    "failed to open certificate store at {}",
+                    certificate_store_path.display()
+                )
+            })?;
+
+    let certificate_store = Arc::new(certificate_store);
+
     let client_ca_pem = root.certificate_pem();
 
     let tls_config =
@@ -204,8 +219,10 @@ async fn main() -> Result<()> {
 
     let issuance =
         Arc::new(
-            IssuanceService::new(
+            IssuanceService::with_certificate_store(
                 IssuancePolicy::default(),
+                Arc::new(daemon_pki_api::audit::AuditStore::new()),
+                Arc::clone(&certificate_store),
             ),
         );
 
@@ -230,6 +247,17 @@ async fn main() -> Result<()> {
     println!("Root CA: persistent");
     println!("Intermediate CA: persistent");
     println!("API server certificate: persistent");
+    println!(
+        "Certificate inventory: persistent"
+    );
+    println!(
+        "Certificate inventory: {}",
+        certificate_store.path().display()
+    );
+    println!(
+        "Certificates currently tracked: {}",
+        certificate_store.len()
+    );
     println!(
         "CA storage: {}",
         data_dir.display()
@@ -260,3 +288,5 @@ async fn main() -> Result<()> {
 
     api.run(&bind_address).await
 }
+
+

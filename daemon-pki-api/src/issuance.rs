@@ -7,6 +7,13 @@ use crate::audit::{
     AuditStore,
 };
 
+use crate::certificates::{
+    CertificateRecord,
+    CertificateStore,
+};
+
+use x509_parser::prelude::*;
+
 use daemon_pki_core::{
     ca::IntermediateCa,
     certificate::{
@@ -86,6 +93,8 @@ pub struct IssuanceAuditEvent {
 
 #[derive(Debug, Error)]
 pub enum IssuanceServiceError {
+    #[error("certificate store error: {0}")]
+    CertificateStore(String),
     #[error("caller is not authorized to issue certificates")]
     Unauthorized,
 
@@ -99,6 +108,7 @@ pub enum IssuanceServiceError {
 pub struct IssuanceService {
     policy: IssuancePolicy,
     audit_store: Arc<AuditStore>,
+    certificate_store: Arc<CertificateStore>,
 }
 
 impl IssuanceService {
@@ -106,6 +116,7 @@ impl IssuanceService {
         Self {
             policy,
             audit_store: Arc::new(AuditStore::new()),
+            certificate_store: Arc::new(CertificateStore::new()),
         }
     }
 
@@ -116,6 +127,19 @@ impl IssuanceService {
         Self {
             policy,
             audit_store,
+            certificate_store: Arc::new(CertificateStore::new()),
+        }
+    }
+
+    pub fn with_certificate_store(
+        policy: IssuancePolicy,
+        audit_store: Arc<AuditStore>,
+        certificate_store: Arc<CertificateStore>,
+    ) -> Self {
+        Self {
+            policy,
+            audit_store,
+            certificate_store,
         }
     }
 
@@ -125,6 +149,10 @@ impl IssuanceService {
 
     pub fn audit_store(&self) -> Arc<AuditStore> {
         Arc::clone(&self.audit_store)
+    }
+
+    pub fn certificate_store(&self) -> Arc<CertificateStore> {
+        Arc::clone(&self.certificate_store)
     }
 
     fn record_event(
@@ -264,8 +292,55 @@ impl IssuanceService {
                 }
             };
 
+        let certificate_pem = certificate.pem();
+        let certificate_der = certificate.der();
+
+        let (_, parsed_certificate) =
+            X509Certificate::from_der(certificate_der)
+                .map_err(|error| {
+                    IssuanceServiceError::CertificateStore(
+                        format!(
+                            "failed to parse issued certificate: {error}"
+                        ),
+                    )
+                })?;
+
+        let serial_number =
+            parsed_certificate
+                .tbs_certificate
+                .serial
+                .to_bytes_be();
+
+        let serial_number = serial_number
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        let not_after =
+            parsed_certificate
+                .validity()
+                .not_after
+                .to_datetime();
+
+        let certificate_record =
+            CertificateRecord::new(
+                serial_number,
+                request.common_name.clone(),
+                request.dns_names.clone(),
+                request.ip_addresses.clone(),
+                request.client_auth,
+                request.server_auth,
+                "Daemon PKI Intermediate CA".to_string(),
+                certificate_pem.clone(),
+                Some(not_after),
+            );
+
+        self.certificate_store
+            .insert(certificate_record)
+            .map_err(|error| IssuanceServiceError::CertificateStore(error.to_string()))?;
+
         let response = IssueCertificateResponse {
-            certificate_pem: certificate.pem(),
+            certificate_pem,
             issuer: "Daemon PKI Intermediate CA".to_string(),
             common_name: request.common_name.clone(),
             dns_names: request.dns_names.clone(),
@@ -525,3 +600,9 @@ mod tests {
         );
     }
 }
+
+
+
+
+
+
