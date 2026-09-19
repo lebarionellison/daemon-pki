@@ -20,14 +20,28 @@ jobs:
       - name: Build release server
         run: cargo build --release -p daemon-pki-api --bin server
 
-      - name: Prepare release artifact
+      - name: Prepare deployment package
         run: |
-          mkdir -p release
-          cp target/release/server release/daemon-pki-server
-          chmod 0755 release/daemon-pki-server
+          mkdir -p release/daemon-pki
 
-      - name: Upload Linux binary
+          cp target/release/server \
+            release/daemon-pki/daemon-pki-server
+
+          cp deploy/install.sh \
+            release/daemon-pki/install.sh
+
+          cp deploy/systemd/daemon-pki.service \
+            release/daemon-pki/daemon-pki.service
+
+          chmod 0755 \
+            release/daemon-pki/daemon-pki-server \
+            release/daemon-pki/install.sh
+
+          tar -czf daemon-pki-linux-x86_64.tar.gz \
+            -C release daemon-pki
+
+      - name: Upload deployment package
         uses: actions/upload-artifact@v4
         with:
           name: daemon-pki-linux-x86_64
-          path: release/daemon-pki-server
+          path: daemon-pki-linux-x86_64.tar.gz
