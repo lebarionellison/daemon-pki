@@ -1,0 +1,33 @@
+﻿name: Build Daemon PKI Linux Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release server
+        run: cargo build --release -p daemon-pki-api --bin server
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p release
+          cp target/release/server release/daemon-pki-server
+          chmod 0755 release/daemon-pki-server
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-pki-linux-x86_64
+          path: release/daemon-pki-server
