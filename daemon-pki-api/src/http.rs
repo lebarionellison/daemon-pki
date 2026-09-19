@@ -1,13 +1,13 @@
+use crate::tls::manager::TlsAcceptorManager;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
 use uuid::Uuid;
 
-use crate::certificates::CertificateRecord;
+
 
 use crate::issuance::{
     AuthenticatedPrincipal,
@@ -124,7 +124,7 @@ impl Default for AuthorizationPolicy {
 pub struct HttpApi {
     issuance: Arc<IssuanceService>,
     intermediate_ca: Arc<IntermediateCa>,
-    tls_acceptor: TlsAcceptor,
+    tls_acceptor: Arc<TlsAcceptorManager>,
     authorization: AuthorizationPolicy,
 }
 
@@ -132,7 +132,7 @@ impl HttpApi {
     pub fn new(
         issuance: Arc<IssuanceService>,
         intermediate_ca: Arc<IntermediateCa>,
-        tls_acceptor: TlsAcceptor,
+        tls_acceptor: Arc<TlsAcceptorManager>,
         authorization: AuthorizationPolicy,
     ) -> Self {
         Self {
@@ -169,7 +169,7 @@ impl HttpApi {
 
             tokio::spawn(async move {
                 let tls_result =
-                    service.tls_acceptor.accept(stream).await;
+                    service.tls_acceptor.current().accept(stream).await;
 
                 let mut tls_stream = match tls_result {
                     Ok(stream) => stream,
@@ -631,6 +631,25 @@ impl HttpApi {
             request.reason.unwrap_or_else(|| "revoked by operator".to_string()),
         ) {
             Ok(Some(certificate)) => {
+                if let Err(error) = self.tls_acceptor.refresh() {
+                    eprintln!(
+                        "certificate revoked but TLS CRL refresh failed: {error}"
+                    );
+
+                    self.write_json(
+                        stream,
+                        500,
+                        &ErrorResponse {
+                            error:
+                                "certificate revoked but TLS revocation state could not be refreshed"
+                                    .to_string(),
+                        },
+                    )
+                    .await?;
+
+                    return Ok(());
+                }
+
                 self.write_json(
                     stream,
                     200,
@@ -853,6 +872,3 @@ mod tests {
         );
     }
 }
-
-
-

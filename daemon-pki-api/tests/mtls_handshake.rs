@@ -1,4 +1,4 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use daemon_pki_api::tls::server::build_mtls_server_config;
 use daemon_pki_core::{
@@ -100,8 +100,8 @@ async fn daemon_pki_real_mtls_handshake(
         &server_cert_pem,
         &server_key_pem,
         &root_cert_pem,
+        None,
     )?;
-
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
 
@@ -182,4 +182,3 @@ async fn daemon_pki_real_mtls_handshake(
 
     Ok(())
 }
-

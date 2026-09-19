@@ -1,4 +1,4 @@
-﻿use super::certificate::{
+use super::certificate::{
     CertificateValidationError,
     CertificateValidity,
     IdentityRequirement,
@@ -144,6 +144,29 @@ impl ChainValidator {
         Ok(())
     }
 
+    /// Validate a DER certificate chain while explicitly enforcing
+    /// the caller-supplied revocation status of the leaf certificate.
+    ///
+    /// The revocation state is deliberately supplied by the caller because
+    /// the core crate must remain independent of the API persistence layer.
+    pub fn validate_der_chain_with_revocation(
+        leaf_der: &[u8],
+        intermediate_der: &[u8],
+        root_der: &[u8],
+        trust_store: &TrustStore,
+        leaf_revoked: bool,
+    ) -> Result<ValidationResult, ChainValidationError> {
+        if leaf_revoked {
+            return Err(ChainValidationError::Revoked);
+        }
+
+        Self::validate_der_chain(
+            leaf_der,
+            intermediate_der,
+            root_der,
+            trust_store,
+        )
+    }
     /// Cryptographically validate:
     ///
     /// Root CA

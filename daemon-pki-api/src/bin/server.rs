@@ -9,9 +9,13 @@ use anyhow::{Context, Result};
 
 use daemon_pki_api::{
     certificates::CertificateStore,
+    crl::CrlManager,
     http::{AuthorizationPolicy, HttpApi},
     issuance::{IssuancePolicy, IssuanceService},
-    tls::server::build_mtls_server_config,
+    tls::{
+        manager::TlsAcceptorManager,
+        server::build_mtls_server_config,
+    },
 };
 
 use daemon_pki_core::{
@@ -207,15 +211,46 @@ async fn main() -> Result<()> {
 
     let client_ca_pem = root.certificate_pem();
 
+
+    let intermediate = Arc::new(intermediate);
+
+    let crl_manager =
+        Arc::new(
+            CrlManager::new(
+                &data_dir,
+                Arc::clone(&certificate_store),
+                Arc::clone(&intermediate),
+            ),
+        );
+
+    let crl_der =
+        crl_manager
+            .generate_and_persist()
+            .context(
+                "failed to generate initial certificate revocation list",
+            )?;
+
     let tls_config =
         build_mtls_server_config(
             server_certificate_pem.as_bytes(),
             server_private_key_pem.as_bytes(),
             client_ca_pem.as_bytes(),
+            Some(&crl_der),
         )
         .context(
             "failed to build mTLS server configuration",
         )?;
+
+    let tls_acceptor =
+        Arc::new(
+            TlsAcceptorManager::new(
+                tls_config,
+                Arc::clone(&crl_manager),
+                server_certificate_pem.as_bytes().to_vec(),
+                server_private_key_pem.as_bytes().to_vec(),
+                client_ca_pem.as_bytes().to_vec(),
+            ),
+        );
 
     let issuance =
         Arc::new(
@@ -231,10 +266,8 @@ async fn main() -> Result<()> {
     let api =
         HttpApi::new(
             issuance,
-            Arc::new(intermediate),
-            tokio_rustls::TlsAcceptor::from(
-                tls_config,
-            ),
+            Arc::clone(&intermediate),
+            Arc::clone(&tls_acceptor),
             authorization,
         );
 
@@ -288,5 +321,3 @@ async fn main() -> Result<()> {
 
     api.run(&bind_address).await
 }
-
-

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use rustls::pki_types::{
     CertificateDer,
+    CertificateRevocationListDer,
     PrivateKeyDer,
 };
 use rustls::{
@@ -15,6 +16,7 @@ pub fn build_mtls_server_config(
     certificate_pem: &[u8],
     private_key_pem: &[u8],
     client_ca_pem: &[u8],
+    client_crl_der: Option<&[u8]>,
 ) -> Result<Arc<ServerConfig>> {
     let certificates = rustls_pemfile::certs(
         &mut BufReader::new(certificate_pem),
@@ -50,10 +52,24 @@ pub fn build_mtls_server_config(
             .context("failed to add client CA trust anchor")?;
     }
 
-    let client_auth =
+    let mut client_auth_builder =
         rustls::server::WebPkiClientVerifier::builder(
             Arc::new(roots),
-        )
+        );
+
+    if let Some(crl_der) = client_crl_der {
+        let crl =
+            CertificateRevocationListDer::from(
+                crl_der.to_vec(),
+            );
+
+        client_auth_builder =
+            client_auth_builder
+                .with_crls(vec![crl])
+                .only_check_end_entity_revocation();
+    }
+
+    let client_auth = client_auth_builder
         .build()
         .context("failed to build mTLS client verifier")?;
 
@@ -68,4 +84,3 @@ pub fn build_mtls_server_config(
 
     Ok(Arc::new(config))
 }
-

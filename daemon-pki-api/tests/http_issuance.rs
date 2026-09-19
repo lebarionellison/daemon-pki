@@ -1,4 +1,4 @@
-﻿use std::io::BufReader;
+use std::io::BufReader;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -35,6 +35,7 @@ use rustls_pemfile::certs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use uuid::Uuid;
 
 #[derive(Debug)]
 struct TrustAllServerVerifier;
@@ -154,6 +155,7 @@ async fn end_to_end_mtls_http_certificate_issuance() -> Result<()> {
             &server_chain,
             server_key_pem.as_bytes(),
             root_pem.as_bytes(),
+            None,
         )?;
 
     let listener =
@@ -458,3 +460,324 @@ async fn end_to_end_mtls_http_certificate_issuance() -> Result<()> {
 
 
 
+
+#[tokio::test]
+async fn revoked_client_certificate_is_rejected_after_crl_refresh() -> Result<()> {
+    use daemon_pki_api::certificates::{
+        CertificateRecord,
+        CertificateStore,
+    };
+    use daemon_pki_api::crl::CrlManager;
+    use daemon_pki_api::tls::manager::TlsAcceptorManager;
+    let root =
+        RootCa::generate("Daemon PKI Revocation Test Root")?;
+
+    let intermediate =
+        IntermediateCa::generate(
+            &root,
+            "Daemon PKI Revocation Test Intermediate",
+        )?;
+
+    let mut server_request =
+        CertificateRequest::new(
+            "daemon-pki-api.internal",
+        )
+        .with_dns_name(
+            "daemon-pki-api.internal",
+        );
+
+    server_request.server_auth = true;
+
+    let (server_certificate, server_key) =
+        CertificateIssuer::issue(
+            &intermediate,
+            server_request,
+        )?;
+
+    let mut client_request =
+        CertificateRequest::new(
+            "revocation-test-client.internal",
+        )
+        .with_dns_name(
+            "revocation-test-client.internal",
+        );
+
+    client_request.client_auth = true;
+
+    let (client_certificate, client_key) =
+        CertificateIssuer::issue(
+            &intermediate,
+            client_request,
+        )?;
+
+    let server_chain = certificate_chain_pem(
+        &server_certificate.pem(),
+        &intermediate.certificate_pem(),
+    );
+
+    let client_chain = certificate_chain_pem(
+        &client_certificate.pem(),
+        &intermediate.certificate_pem(),
+    );
+
+    let server_key_pem =
+        server_key.serialize_pem();
+
+    let root_pem =
+        root.certificate_pem();
+
+    let temp_path =
+        std::env::current_dir()?
+            .join("target")
+            .join(format!(
+                "daemon-pki-revocation-test-{}",
+                Uuid::new_v4(),
+            ));
+
+    std::fs::create_dir_all(&temp_path)?;
+
+    let certificate_store =
+        Arc::new(
+            CertificateStore::open(
+                temp_path.join("certificates.json"),
+            )?,
+        );
+
+    let serial_number =
+        x509_parser::parse_x509_certificate(
+            client_certificate.der().as_ref(),
+        )?
+        .1
+        .tbs_certificate
+        .serial
+        .to_bytes_be()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    certificate_store.insert(
+        CertificateRecord {
+            id: Uuid::new_v4(),
+            serial_number,
+            common_name:
+                "revocation-test-client.internal"
+                    .to_string(),
+            dns_names: vec![
+                "revocation-test-client.internal"
+                    .to_string(),
+            ],
+            ip_addresses: Vec::new(),
+            client_auth: true,
+            server_auth: false,
+            issuer:
+                "Daemon PKI Revocation Test Intermediate"
+                    .to_string(),
+            certificate_pem:
+                client_certificate.pem(),
+            issued_at:
+                time::OffsetDateTime::now_utc(),
+            not_after: None,
+            revoked: false,
+            revoked_at: None,
+            revocation_reason: None,
+        },
+    )?;
+
+    let certificate_id =
+        certificate_store
+            .list()
+            .first()
+            .context("certificate record missing")?
+            .id;
+
+    let intermediate =
+        Arc::new(intermediate);
+
+    let crl_manager =
+        Arc::new(
+            CrlManager::new(
+                &temp_path,
+                Arc::clone(&certificate_store),
+                Arc::clone(&intermediate),
+            ),
+        );
+
+    let initial_crl =
+        crl_manager.generate_and_persist()?;
+
+    let initial_config =
+        build_mtls_server_config(
+            &server_chain,
+            server_key_pem.as_bytes(),
+            root_pem.as_bytes(),
+            Some(&initial_crl),
+        )?;
+
+    let tls_acceptor =
+        TlsAcceptorManager::new(
+            initial_config,
+            Arc::clone(&crl_manager),
+            server_chain.clone(),
+            server_key_pem.as_bytes().to_vec(),
+            root_pem.as_bytes().to_vec(),
+        );
+
+    let listener =
+        TcpListener::bind(
+            "127.0.0.1:0",
+        )
+        .await?;
+
+    let address =
+        listener.local_addr()?;
+
+    let client_key_pem =
+        client_key.serialize_pem();
+
+    let client_certificates =
+        certs(
+            &mut BufReader::new(
+                client_chain.as_slice(),
+            ),
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let client_private_key =
+        rustls_pemfile::private_key(
+            &mut BufReader::new(
+                client_key_pem.as_bytes(),
+            ),
+        )?
+        .context(
+            "client private key missing",
+        )?;
+
+    let client_config =
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(
+                Arc::new(
+                    TrustAllServerVerifier,
+                ),
+            )
+            .with_client_auth_cert(
+                client_certificates,
+                PrivateKeyDer::try_from(
+                    client_private_key,
+                )?,
+            )?;
+
+    let connector =
+        TlsConnector::from(
+            Arc::new(client_config),
+        );
+
+    let server_acceptor =
+        tls_acceptor.current();
+
+    let server_task =
+        tokio::spawn(async move {
+            let (stream, _) =
+                listener.accept().await?;
+
+            server_acceptor
+                .accept(stream)
+                .await?;
+
+            Ok::<(), anyhow::Error>(())
+        });
+
+    let stream =
+        tokio::net::TcpStream::connect(
+            address,
+        )
+        .await?;
+
+    let server_name =
+        ServerName::try_from(
+            "daemon-pki-api.internal",
+        )?;
+
+    connector
+        .connect(
+            server_name.clone(),
+            stream,
+        )
+        .await?;
+
+    server_task.await??;
+
+    certificate_store
+        .revoke(
+            certificate_id,
+            "key compromise".to_string(),
+        )?
+        .context("certificate was not revoked")?;
+
+    tls_acceptor.refresh()?;
+
+    println!("CLIENT CERT ISSUER: {:?}", x509_parser::parse_x509_certificate(client_certificate.der().as_ref())?.1.tbs_certificate.issuer.as_raw().to_vec());
+
+    let refreshed_crl = crl_manager.generate_and_persist()?;
+    println!("REFRESHED CRL LEN: {}", refreshed_crl.len());
+    let parsed_crl = x509_parser::parse_x509_crl(&refreshed_crl)?.1;
+    println!("CRL ISSUER: {:?}", parsed_crl.tbs_cert_list.issuer.as_raw());
+    println!("CLIENT CERT SERIAL: {:?}", x509_parser::parse_x509_certificate(client_certificate.der().as_ref())?.1.tbs_certificate.raw_serial());
+
+    let listener =
+        TcpListener::bind(
+            "127.0.0.1:0",
+        )
+        .await?;
+
+    let address =
+        listener.local_addr()?;
+
+    let server_acceptor =
+        tls_acceptor.current();
+
+    let server_task =
+        tokio::spawn(async move {
+            let (stream, _) =
+                listener.accept().await?;
+
+            let result =
+                server_acceptor
+                    .accept(stream)
+                    .await;
+
+            Ok::<bool, anyhow::Error>(
+                result.is_err(),
+            )
+        });
+
+    let stream =
+        tokio::net::TcpStream::connect(
+            address,
+        )
+        .await?;
+
+    let result =
+        connector
+            .connect(
+                server_name,
+                stream,
+            )
+            .await;
+
+    assert!(
+        result.is_err(),
+        "revoked client certificate unexpectedly completed mTLS handshake"
+    );
+
+    assert!(
+        server_task.await??,
+        "server unexpectedly accepted the revoked client certificate"
+    );
+
+    println!(
+        "Daemon PKI certificate revocation enforcement: PASSED"
+    );
+
+    Ok(())
+}

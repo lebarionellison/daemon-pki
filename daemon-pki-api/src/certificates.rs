@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -182,6 +182,22 @@ impl CertificateStore {
         Ok(Some(updated))
     }
 
+    pub fn is_revoked_serial(
+        &self,
+        serial_number: &str,
+    ) -> bool {
+        let records = self
+            .records
+            .read()
+            .expect("certificate store lock poisoned");
+
+        records
+            .values()
+            .any(|record| {
+                record.serial_number == serial_number
+                    && record.revoked
+            })
+    }
     pub fn remove(
         &self,
         id: Uuid,
