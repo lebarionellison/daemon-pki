@@ -1,0 +1,13 @@
+﻿[package]
+name = "daemon-pki-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+daemon-pki-core = { path = "../daemon-pki-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

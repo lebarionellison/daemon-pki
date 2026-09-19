@@ -1,0 +1,27 @@
+﻿[package]
+name = "daemon-pki-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+daemon-pki-core = { path = "../daemon-pki-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+rustls.workspace = true
+rustls-pemfile = "2"
+base64 = "0.22"
+sha2.workspace = true
+rcgen.workspace = true
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util"] }
+tokio-rustls = "0.26"
+httparse = "1"
+x509-parser.workspace = true
+
+
+

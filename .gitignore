@@ -1,0 +1,14 @@
+# Rust build output
+/target/
+
+# Local build/error logs
+cargo-error.txt
+daemon-pki-cli-build-errors.txt
+mtls-errors.txt
+pki-errors.txt
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
