@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Daemon PKI mTLS Certificate Authority API
 After=network-online.target
 Wants=network-online.target
@@ -14,7 +14,7 @@ Restart=always
 RestartSec=5
 
 Environment=DAEMON_PKI_DATA_DIR=/var/lib/daemon-pki
-Environment=DAEMON_PKI_BIND=0.0.0.0:8443
+Environment=DAEMON_PKI_BIND=127.0.0.1:8443
 
 NoNewPrivileges=true
 PrivateTmp=true
@@ -24,3 +24,4 @@ ReadWritePaths=/var/lib/daemon-pki
 
 [Install]
 WantedBy=multi-user.target
+
